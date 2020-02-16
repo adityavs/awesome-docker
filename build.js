@@ -1,25 +1,45 @@
-const fs = require('fs');
-const showdown = require('showdown');
+const fs = require('fs-extra');
 const cheerio = require('cheerio');
+const showdown = require('showdown');
 const Parcel = require('parcel-bundler');
-const camelCase = require('camelcase');
+const sm = require('sitemap');
 
 process.env.NODE_ENV = 'production';
 
-process.on('unhandledRejection', error => {
-  console.log('unhandledRejection', error.message);
-});
+const LOG = {
+  error: (...args) => console.error('❌ ERROR', { ...args }),
+  debug: (...args) => {
+    if (process.env.DEBUG) console.log('💡 DEBUG: ', { ...args });
+  },
+};
+const handleFailure = err => {
+  LOG.error(err);
+  process.exit(1);
+};
 
-const readme = 'README.md';
-const template = 'website/index.tmpl.html';
-const merged = 'website/index.html';
-const destination = 'website/index.html';
+process.on('unhandledRejection', handleFailure);
 
-const includeReadme = ({
-  md = readme,
-  templateHTML = template,
-  dest = merged,
-}) => {
+// --- FILES
+const README = 'README.md';
+const WEBSITE_FOLDER = 'website';
+const indexTemplate = `${WEBSITE_FOLDER}/index.tmpl.html`;
+const indexDestination = `${WEBSITE_FOLDER}/index.html`;
+
+const sitemapOpts = {
+  hostname: 'https://awesome-docker.netlify.com/',
+  cacheTime: 6000000, // 600 sec (10 min) cache purge period
+  urls: [
+    {
+      url: '/',
+      changefreq: 'daily',
+      priority: 0.8,
+      lastmodrealtime: true,
+      lastmodfile: 'dist/index.html',
+    },
+  ],
+};
+
+async function processIndex() {
   const converter = new showdown.Converter({
     omitExtraWLInCodeBlocks: true,
     simplifiedAutoLink: true,
@@ -41,49 +61,45 @@ const includeReadme = ({
   });
   // converter.setFlavor('github');
 
-  console.log('Loading files...');
-  const indexTemplate = fs.readFileSync(templateHTML, 'utf8');
-  const markdown = fs.readFileSync(md, 'utf8');
+  try {
+    LOG.debug('Loading files...', { indexTemplate, README });
+    const template = await fs.readFile(indexTemplate, 'utf8');
+    const markdown = await fs.readFile(README, 'utf8');
 
-  console.log('Merging files...');
-  const $ = cheerio.load(indexTemplate);
-  $('#md').append(converter.makeHtml(markdown));
-  $('a').each((i, elem) => {
-    $(elem).attr(
-      'id',
-      camelCase(
-        $(elem)
-          .attr('href')
-          .replace(/\/|\.|:|#/g, ''),
-        {
-          pascalCase: true,
-        },
-      ),
-    );
-  });
-  console.log('Writing index.html');
-  fs.writeFileSync(dest, $.html(), 'utf8');
-  console.log('DONE 👍');
-};
+    LOG.debug('Merging files...');
+    const $ = cheerio.load(template);
+    $('#md').append(converter.makeHtml(markdown));
 
-const bundle = (dest = destination) => {
-  console.log('');
-  console.log('Bundling with Parcel.js');
-  console.log('');
+    LOG.debug('Writing index.html');
+    await fs.outputFile(indexDestination, $.html(), 'utf8');
+    LOG.debug('DONE 👍');
+  } catch (err) {
+    handleFailure(err);
+  }
+}
 
-  new Parcel(dest, {
+const bundle = () => {
+  LOG.debug('---');
+  LOG.debug('📦  Bundling with Parcel.js');
+  LOG.debug('---');
+
+  new Parcel(indexDestination, {
     name: 'build',
     publicURL: '/',
   })
     .bundle()
-    .then(() => {
-      fs.copyFileSync('website/sitemap.xml', 'dist/sitemap.xml');
-    });
+    .then(() =>
+      // Creates a sitemap object given the input configuration with URLs
+      fs.outputFile(
+        'dist/sitemap.xml',
+        sm.createSitemap(sitemapOpts).toString(),
+      ),
+    );
 };
 
-const main = () => {
-  includeReadme({});
-  bundle();
-};
+async function main() {
+  await processIndex();
+  await bundle();
+}
 
 main();
